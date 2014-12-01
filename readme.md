@@ -55,4 +55,4 @@
 
 运行方式：
     python src/python/main.py conf/xxx.conf logs/xxx.log [is-debug]
-    is-debug: 取值为 true，false, 为true 日志会打印debug的日志，否则关闭debug
+    is-debug: 取值为 true，false, 为 true 日志会打印 debug 的日志，否则关闭 debug 日志
