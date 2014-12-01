@@ -7,6 +7,7 @@ import logging
 import json
 import os
 import traceback
+import pymongo
 from bson.timestamp import Timestamp
 
 flock = threading.Lock()
@@ -248,61 +249,76 @@ class ReplicaSynchronizer(threading.Thread):
             logging.error("src connect not alive, reconnect")
             self._src_mc = self._src_conn.getConn()
 
-        cursor = self._src_mc['local']['oplog.rs'].find({'ts': {'$gte': self._ts}},
-                                                        tailable=True)
-        if not cursor:
-            logging.error('oplog not found')
-            return
-
-        logging.info('oplog is healthy')
         count = 0
         allcount = 0
         last_up = time.time()
 
         while True:
-            try:
-                if not cursor.alive:
-                    logging.error('cursor is dead')
-                    return
+            logging.info("begin optlog find")
 
-                oplog = cursor.next()
+            # cursor = self._src_mc['local']['oplog.rs'].find({'ts': {'$gt': self._ts}})  # ,tailable=True)
+            cursor = self._src_mc['local']['oplog.rs'].find({'ts': {'$gt': self._ts}}, tailable=True)
 
-                # parse oplog
-                self._ts = oplog.get('ts')
-                ns = oplog.get('ns')
-
-                if not ns:
-                    logging.debug("oplog is: %s" % (oplog))
-                    continue
-
-                # 仅仅处理了 db 和 coll
-                index = ns.find('.')
-                if index > 0:
-                    db = ns[0: index]
-                    coll = ns[index + 1:]
-
-                    if ns in self._conf.dbs or db in self._conf.dbs:
-                        self._syncDst(db, coll, oplog)
-
-                        num = self._syncData.get(db, 0)
-                        self._syncData[db] = num + 1
-
-                # record the oplog information
-                allcount += 1
-                count += 1
-                if count >= self._conf.record_interval or (time.time() - last_up >= self._conf.record_time_interval):
-                    last_up = time.time()
-                    count = 0
-                    updateOptTime(self._conf.opt_file, self._src_conn.getRepl(), self._ts)
-                    logging.info('have sync: %d records, but valid info detail: %s' % (allcount, self._syncData))
-            except StopIteration, e:
+            if not cursor:
                 logging.debug(
                     '%s has not data to sync. ' % (self._src_conn))
                 time.sleep(10)
+                continue
+
+            logging.info("optlog find: %d, ts: %s" % (cursor.count(), self._ts))
+
+            # sync
+            while cursor.alive:
+                try:
+                    oplog = cursor.next()
+
+                    # parse oplog
+                    self._ts = oplog.get('ts')
+                    ns = oplog.get('ns')
+
+                    if not ns:
+                        logging.debug("oplog is: %s" % (oplog))
+                        continue
+
+                    # 仅仅处理了 db 和 coll
+                    index = ns.find('.')
+                    if index > 0:
+                        db = ns[0: index]
+                        coll = ns[index + 1:]
+
+                        if ns in self._conf.dbs or db in self._conf.dbs:
+                            self._syncDst(db, coll, oplog)
+
+                            num = self._syncData.get(db, 0)
+                            self._syncData[db] = num + 1
+
+                    # record the oplog information
+                    allcount += 1
+                    count += 1
+                    if count >= self._conf.record_interval or (
+                                    time.time() - last_up >= self._conf.record_time_interval):
+                        last_up = time.time()
+                        count = 0
+                        updateOptTime(self._conf.opt_file, self._src_conn.getRepl(), self._ts)
+                        logging.info('have sync: %d records, but valid info detail: %s' % (allcount, self._syncData))
+                except StopIteration, e:
+                    logging.debug('%s StopIteration Exception.' % (
+                        self._src_conn))
+
+                    time.sleep(5)
+                    if not cursor.alive:
+                        break
+                except:
+                    logging.error('%s cursor error: %s' % (
+                        self._src_conn, traceback.format_exc()))
+                    break
+
+            # close the cursor
+            try:
+                cursor.close()
             except:
-                logging.error('%s cursor error: %s' % (
+                logging.error('%s cursor close error: %s' % (
                     self._src_conn, traceback.format_exc()))
-                return
 
     def _getSrcOptime(self):
         """ Get current optime of source mongod.  """

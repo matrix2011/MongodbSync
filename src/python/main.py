@@ -22,7 +22,7 @@ g_log_file = sys.argv[2]
 
 is_debug = True if len(sys.argv) == 4 and sys.argv[3] == 'true' else False
 
-logging.basicConfig(filename=g_log_file, format='[%(levelname)s] %(asctime)s %(module)s:%(funcName)s:%(lineno)d %(message)s',
+logging.basicConfig(filename=g_log_file, format='[%(levelname)s] %(thread)d %(asctime)s %(module)s:%(funcName)s:%(lineno)d %(message)s',
                     level=logging.INFO if not is_debug else logging.DEBUG)
 logging.info("config file: %s, log file: %s, is_debug: %s" % (g_conf_file, g_log_file, is_debug))
 
