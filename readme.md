@@ -17,6 +17,8 @@
         opt_file: optime 记录在 该文件中，all 模式在拷贝完更新它，incr, smart 模式不定期更新它，如果文件不存在则默认从 1 小时前同步；
         all_dbs: 为 true 表示同步全部的数据库, 不包括 admin，config，local, 否则同步 dbs；
         dbs: 需要同步的数据库集合，不包括 admin，config，local；
+        queue_num: 队列最大数目，暂无使用该参数，代码里固定了是 20000；
+        threads: 线程数，由于源和目的 的网络状况可能不一样，可以有多个连接去写目的地址；
 
     mongo-src
         addr: 源地址，可以是一个副本集，也可以是 mongos，如果是 mongos，系统会自动连接到相应的副本集；
