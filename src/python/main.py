@@ -104,9 +104,19 @@ class MongodSynchronizer(object):
             t.start()
             threads.append(t)
 
+        # start the thread
+        consumer_threads = []
+        for i in range(self._conf.threads):
+            t = replica_syn.ConsumerSynchronizer(self._dest_mongo_conn, self._conf)
+            t.start()
+            consumer_threads.append(t)
+
+        # wait for stop
         for t in threads:
             t.join()
 
+        for t in consumer_threads:
+            t.join()
 
 if __name__ == '__main__':
     conf = SyncConfig(g_conf_file)

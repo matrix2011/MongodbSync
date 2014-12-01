@@ -8,9 +8,14 @@ import json
 import os
 import traceback
 import pymongo
+import Queue
+from threading import Thread
 from bson.timestamp import Timestamp
 
 flock = threading.Lock()
+
+g_msg_queue = Queue.Queue(20000)
+g_realTS = None
 
 
 def getFileContent(filename):
@@ -89,6 +94,7 @@ class ReplicaSynchronizer(threading.Thread):
     """ MongoDB synchronizer"""
 
     def __init__(self, src_conn, dest_conn, conf):
+        global g_msg_queue, g_realTS
         """ Constructor.
         """
         threading.Thread.__init__(self)
@@ -113,9 +119,11 @@ class ReplicaSynchronizer(threading.Thread):
             src_conn, dest_conn, self._conf.dbs))
 
     def __del__(self):
-        if self._ts and self._conf.mode in ['incr', 'smart']:
+        global g_msg_queue, g_realTS
+
+        if self._realTS and self._conf.mode in ['incr', 'smart']:
             logging.info('update ts before exit')
-            updateOptTime(self._conf.opt_file, self._src_conn.getRepl(), self._ts)
+            updateOptTime(self._conf.opt_file, self._src_conn.getRepl(), g_realTS)
 
     def _indexParse(self, index_key):
         ''' 索引的解析，返回一个 list
@@ -199,44 +207,8 @@ class ReplicaSynchronizer(threading.Thread):
                 if not collname.startswith('system'):
                     self._ensureCollection(dbname, collname, copy_data)
 
-    def _syncDst(self, dbname, collname, oplog):
-        '''
-        :param dbname:
-        :param collname:
-        :param oplog:
-        :return:
-        '''
-        op = oplog['op']
-        logging.debug('dbname: %s, collname: %s, op: %s' % (dbname, collname, op))
-
-        # ensure collection first if not exists
-        self._ensureCollection(dbname, collname, copy_data=False)
-
-        while True:
-            try:
-                if op == 'i':  # insert
-                    self._dest_mc[dbname][collname].save(oplog['o'])  # if exist,recover it
-                elif op == 'u':  # update
-                    self._dest_mc[dbname][collname].update(oplog['o2'], oplog['o'])
-                elif op == 'd':  # delete
-                    self._dest_mc[dbname][collname].remove(oplog['o'])
-                elif op == 'c':  # command
-                    self._dest_mc[dbname].command(oplog['o'])
-                elif op == 'n':  # no-op
-                    logging.info('no-op')
-                else:
-                    logging.error('unknown command: %s' % (oplog))
-                break
-            except Exception, e:
-                logging.error('sync dst mongo failed: %s' % (traceback.format_exc()))
-                # reconnect if failed
-                if not self._dest_mc.alive:
-                    time.sleep(5)
-                    logging.error(
-                        "dest connect not alive, reconnect and try to insert again.")
-                    self._dst_mc = self._dest_conn.getConn()
-
     def _syncOplogImpl(self):
+        global g_msg_queue, g_realTS
         '''
         :param opt_time: 上次的更新时间
         :return:
@@ -256,7 +228,6 @@ class ReplicaSynchronizer(threading.Thread):
         while True:
             logging.info("begin optlog find")
 
-            # cursor = self._src_mc['local']['oplog.rs'].find({'ts': {'$gt': self._ts}})  # ,tailable=True)
             cursor = self._src_mc['local']['oplog.rs'].find({'ts': {'$gt': self._ts}}, tailable=True)
 
             if not cursor:
@@ -287,10 +258,15 @@ class ReplicaSynchronizer(threading.Thread):
                         coll = ns[index + 1:]
 
                         if ns in self._conf.dbs or db in self._conf.dbs:
-                            self._syncDst(db, coll, oplog)
+                            # if queue is full, sleep for a will
+                            while g_msg_queue.full():
+                                time.sleep(5)
+                            g_msg_queue.put((db, coll, oplog), block=False)
 
                             num = self._syncData.get(db, 0)
                             self._syncData[db] = num + 1
+
+                            # self._syncDst(db, coll, oplog)
 
                     # record the oplog information
                     allcount += 1
@@ -299,8 +275,9 @@ class ReplicaSynchronizer(threading.Thread):
                                     time.time() - last_up >= self._conf.record_time_interval):
                         last_up = time.time()
                         count = 0
-                        updateOptTime(self._conf.opt_file, self._src_conn.getRepl(), self._ts)
-                        logging.info('have sync: %d records, but valid info detail: %s' % (allcount, self._syncData))
+                        updateOptTime(self._conf.opt_file, self._src_conn.getRepl(), g_realTS)
+                        logging.info(
+                            'have read: %d records, maybe not sync, read info detail: %s' % (allcount, self._syncData))
                 except StopIteration, e:
                     logging.debug('%s StopIteration Exception.' % (
                         self._src_conn))
@@ -336,6 +313,7 @@ class ReplicaSynchronizer(threading.Thread):
         return Timestamp((int)(time.time()), 0)
 
     def run(self):
+        global g_msg_queue, g_realTS
         """ Apply oplog, 如果是全量模式，会进行集合的创建，数据的拷贝工作，然后退出；增量模式则会一直同步下去 """
         # make sure exist the opt file
         if not os.path.isfile(self._conf.opt_file):
@@ -357,6 +335,7 @@ class ReplicaSynchronizer(threading.Thread):
         if self._conf.mode in ['incr', 'smart']:
             tmp_ts = getFileOptTime(self._conf.opt_file, self._src_conn.getRepl())
             self._ts = Timestamp(tmp_ts[0], tmp_ts[1])
+            g_realTS = self._ts
 
             while True:
                 try:
@@ -367,3 +346,78 @@ class ReplicaSynchronizer(threading.Thread):
 
                 logging.error("return from sync, sleep for a will and try again")
                 time.sleep(10)
+
+        # wait for queue release and thread release
+        g_msg_queue.join()
+
+
+class ConsumerSynchronizer(threading.Thread):
+    def __init__(self, dest_conn, conf):
+        """ Constructor.
+        """
+        threading.Thread.__init__(self)
+
+        self._conf = conf
+        self._dest_conn = dest_conn
+        self._dest_mc = self._dest_conn.getConn()
+
+        logging.info("consumer sync dest(%s)" % (dest_conn))
+
+    def _syncDst(self):
+        global g_msg_queue, g_realTS
+        '''
+        :param dbname:
+        :param collname:
+        :param oplog:
+        :return:
+        '''
+        count = 0
+        while True:
+            try:
+                dbname, collname, oplog = g_msg_queue.get(timeout=5)
+
+                op = oplog['op']
+
+                tt = oplog.get('ts')
+                if tt < g_realTS:
+                    g_realTS = tt
+
+                logging.debug('dbname: %s, collname: %s, op: %s' % (dbname, collname, op))
+
+                if op == 'i':  # insert
+                    self._dest_mc[dbname][collname].save(oplog['o'])  # if exist,recover it
+                elif op == 'u':  # update
+                    self._dest_mc[dbname][collname].update(oplog['o2'], oplog['o'])
+                elif op == 'd':  # delete
+                    self._dest_mc[dbname][collname].remove(oplog['o'])
+                elif op == 'c':  # command
+                    self._dest_mc[dbname].command(oplog['o'])
+                elif op == 'n':  # no-op
+                    logging.info('no-op')
+                else:
+                    logging.error('unknown command: %s' % (oplog))
+
+                # record the oplog information
+                count += 1
+                if count % self._conf.record_interval == 0:
+                    logging.info('have sync: %d records' % (count))
+            except Queue.Empty, e:
+                logging.debug('queue is empty, not sync')
+            except Exception, e:
+                logging.error('sync dst mongo failed: %s' % (traceback.format_exc()))
+                # reconnect if failed
+                while not self._dest_mc or not self._dest_mc.alive:
+                    time.sleep(5)
+                    logging.error(
+                        "dest connect not alive, reconnect and try to insert again.")
+                    # reconnect again
+                    try:
+                        self._dest_mc = self._dest_conn.getConn()
+                    except:
+                        logging.error(
+                            "get dest connect exception: %s" % (traceback.format_exc()))
+
+    def run(self):
+        logging.info("start a consumer...")
+
+        self._syncDst()

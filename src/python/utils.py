@@ -22,6 +22,8 @@ class SyncConfig(object):
         self.log_file = None
         self.all_dbs = None
         self.dbs = None
+        self.queue_num = None
+        self.threads = None
 
         # mongo-src
         self.mongo_src = None
@@ -53,8 +55,12 @@ class SyncConfig(object):
             if not self.all_dbs:
                 self.dbs = config.get("sync-info", "dbs").split(",")
 
-            logging.info("mode: %s, record_interval: %d, record_time_interval: %d, opt file: %s, all dbs: %s, sync dbs: %s" % (
-                self.mode, self.record_interval, self.record_time_interval, self.opt_file, self.all_dbs, self.dbs))
+            # queue num and threads num
+            self.queue_num = config.getint("sync-info", "queue_num")
+            self.threads = config.getint("sync-info", "threads")
+
+            logging.info("mode: %s, record_interval: %d, record_time_interval: %d, opt file: %s, all dbs: %s, sync dbs: %s, queue num: %d, threads: %d" % (
+                self.mode, self.record_interval, self.record_time_interval, self.opt_file, self.all_dbs, self.dbs, self.queue_num, self.threads))
 
             # mongo-src
             self.mongo_src = (
@@ -78,8 +84,8 @@ class SyncConfig(object):
         return True
 
     def __str__(self):
-        return "mode: %s, record_interval: %d, record_time_interval: %d, opt_file: %s, all_dbs: %s, dbs: %s, mongo_src: %s, mongo_dest: %s" % (
-            self.mode, self.record_interval, self.record_time_interval, self.opt_file, self.all_dbs, self.dbs, self.mongo_src, self.mongo_dest)
+        return "mode: %s, record_interval: %d, record_time_interval: %d, opt_file: %s, all_dbs: %s, dbs: %s, queue num: %d, threads: %d, mongo_src: %s, mongo_dest: %s" % (
+            self.mode, self.record_interval, self.record_time_interval, self.opt_file, self.all_dbs, self.dbs, self.queue_num, self.threads, self.mongo_src, self.mongo_dest)
 
 
 class MongoConnInfo(object):
