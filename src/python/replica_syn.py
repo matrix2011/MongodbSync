@@ -154,10 +154,15 @@ class ReplicaSynchronizer(threading.Thread):
 
     def _ensureCollection(self, dbname, collname, copy_data=False):
         ''' 保证这个集合是 OK 的 '''
+        coll_count = self._dest_mc[dbname][collname].count()
+
+        # if have exist data and not need copy, then return
+        if coll_count > 0 and not copy_data:
+            logging.debug("ensure collection, %s.%s, copy data: %s" % (dbname, collname, copy_data))
+            return
+
         logging.info(
             "ensure collection, %s.%s, copy data: %s" % (dbname, collname, copy_data))
-
-        coll_count = self._dest_mc[dbname][collname].count()
 
         if coll_count == 0:
             self._ensureIndex(dbname, collname)
