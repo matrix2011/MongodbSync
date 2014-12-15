@@ -121,7 +121,7 @@ class ReplicaSynchronizer(threading.Thread):
     def __del__(self):
         global g_msg_queue, g_realTS
 
-        if self._realTS and self._conf.mode in ['incr', 'smart']:
+        if g_realTS and self._conf.mode in ['incr', 'smart']:
             logging.info('update ts before exit')
             updateOptTime(self._conf.opt_file, self._src_conn.getRepl(), g_realTS)
 
