@@ -326,8 +326,8 @@ class ReplicaSynchronizer(threading.Thread):
 
         for db in self._conf.dbs:
             if self._conf.mode in ['all', 'smart']:
-                self._ensureDB(db, copy_data=True)
                 updateOptTime(self._conf.opt_file, self._src_conn.getRepl(), self._getSrcOptime())
+                self._ensureDB(db, copy_data=True)
             else:
                 self._ensureDB(db, copy_data=False)
 
